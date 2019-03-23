@@ -3,58 +3,74 @@
 #include<string>
 #include<vector>
 #include<list>
-#include<queue>
 #include<map>
 #include<functional>
-#include<thread>
-#include<mutex>
-#include<condition_variable>
 namespace dynamic{
-	struct Object;
-	struct Message{
-		Object *m_p;
-		std::string m_msg;
-		std::vector<Object*> m_args;
-	};
+	struct ObjectPointer;
 	struct Object{
-		static void procedure(Object*,std::function<bool(const Message&)>);
-		std::list<Object*> m_parents;
-		std::map<std::string,Object*> m_members;
-		std::string m_type;
-		std::thread m_thread;
-		std::mutex m_mutex,m_queue_mutex;
-		std::condition_variable m_cv;
-		std::queue<Message> m_msg_queue;
-		Object(const std::string &type,std::function<bool(const Message&)> call_back):Object(std::string(type),call_back){}
-		Object(std::string &&type,std::function<bool(const Message&)> call_back):m_type(type),m_thread(procedure,this,call_back){}
-		~Object(){
-			push({this,"QUIT",{}});
-			m_thread.join();
-		}
-		void push(const Message &msg){
-			push(Message(msg));
-		}
-		void push(Message &&msg){
-			{
-				std::lock_guard<std::mutex> lock(m_queue_mutex);
-				m_msg_queue.push(msg);
+		Object():ref_cnt(0){}
+		virtual ~Object()=default;
+		size_t ref_cnt;
+		std::list<ObjectPointer> parents;
+		std::map<std::string,ObjectPointer> members;
+		std::function<std::pair<ObjectPointer,bool>(const ObjectPointer&,const std::string&,const std::vector<ObjectPointer>&)> proc;
+		std::pair<ObjectPointer,bool> procedure(const std::string&,const std::vector<ObjectPointer>&);
+	};
+	class ObjectPointer{
+		public:
+			template<class type=Object> // type must be Object or a subclass of Object, or it causes undefined behavior
+			static ObjectPointer create(){
+				ObjectPointer p;
+				p.New<type>();
+				return p;
 			}
-			std::unique_lock<std::mutex> lock(m_mutex);
-			m_cv.notify_one();
-		}
-		Message pop(){
-			Message msg;
-			{
-				std::lock_guard<std::mutex> lock(m_queue_mutex);
-				msg=m_msg_queue.front();
-				m_msg_queue.pop();
+			ObjectPointer(Object *p=nullptr)noexcept:m_pointer(p){
+				if(p)
+					p->ref_cnt++;
 			}
-			return msg;
-		}
-		bool empty(){
-			std::lock_guard<std::mutex> lock(m_queue_mutex);
-			return m_msg_queue.empty();
-		}
+			ObjectPointer(const ObjectPointer &other)noexcept:m_pointer(other.m_pointer){
+				if(m_pointer!=nullptr)
+					m_pointer->ref_cnt++;
+			}
+			ObjectPointer(ObjectPointer &&other)noexcept:m_pointer(other.m_pointer){
+				other.m_pointer=nullptr;
+			}
+			~ObjectPointer(){
+				release();
+			}
+			ObjectPointer& operator=(const ObjectPointer &other){
+				release();
+				if((m_pointer=other.m_pointer)!=nullptr)
+					m_pointer->ref_cnt++;
+				return *this;
+			}
+			ObjectPointer& operator=(ObjectPointer &&other){
+				release();
+				m_pointer=other.m_pointer;
+				other.m_pointer=nullptr;
+				return *this;
+			}
+			template<class type=Object> // type must be the actual type of the object pointed to by m_pointer or the parent class of the actual type, or it causes undefined behavior
+			type& operator*()const{
+				return *(type*)m_pointer;
+			}
+			template<class type=Object> // type must be the actual type of the object pointed to by m_pointer or the parent class of the actual type, or it causes undefined behavior
+			type* operator->()const{
+				return (type*)m_pointer;
+			}
+			template<class type=Object> // type must be Object or a subclass of Object, or it causes undefined behavior
+			ObjectPointer& New(){
+				release();
+				m_pointer=new type;
+				m_pointer->ref_cnt=1;
+				return *this;
+			}
+			void release(){
+				delete m_pointer;
+				m_pointer=nullptr;
+			}
+		private:
+			Object *m_pointer;
 	};
 }
 #endif
